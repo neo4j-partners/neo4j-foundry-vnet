@@ -1,0 +1,93 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "environmentName": {
+      "value": "${AZURE_ENV_NAME}"
+    },
+    "location": {
+      "value": "${AZURE_LOCATION}"
+    },
+    "foundryPublicNetworkAccess": {
+      "value": "${FOUNDRY_PUBLIC_NETWORK_ACCESS=Enabled}"
+    },
+    "neo4jUri": {
+      "value": "${NEO4J_URI=}"
+    },
+    "neo4jDatabase": {
+      "value": "${NEO4J_DATABASE=neo4j}"
+    },
+    "neo4jUsername": {
+      "value": "${NEO4J_USERNAME=neo4j}"
+    },
+    "neo4jPassword": {
+      "value": "${NEO4J_PASSWORD}"
+    },
+    "readOnly": {
+      "value": "${NEO4J_READ_ONLY=true}"
+    },
+    "containerImage": {
+      "value": "${NEO4J_MCP_CONTAINER_IMAGE=mcp/neo4j:latest}"
+    },
+    "mcpPort": {
+      "value": "${MCP_PORT=8000}"
+    },
+    "mcpMinReplicas": {
+      "value": "${MCP_MIN_REPLICAS=1}"
+    },
+    "mcpMaxReplicas": {
+      "value": "${MCP_MAX_REPLICAS=3}"
+    },
+    "mcpCpu": {
+      "value": "${MCP_CPU=0.5}"
+    },
+    "mcpMemory": {
+      "value": "${MCP_MEMORY=1Gi}"
+    },
+    "mcpConcurrentRequests": {
+      "value": "${MCP_CONCURRENT_REQUESTS=20}"
+    },
+    "neo4jLogFormat": {
+      "value": "${NEO4J_LOG_FORMAT=json}"
+    },
+    "neo4jTelemetry": {
+      "value": "${NEO4J_TELEMETRY=true}"
+    },
+    "neo4jSchemaSampleSize": {
+      "value": "${NEO4J_SCHEMA_SAMPLE_SIZE=100}"
+    },
+    "neo4jAllowedOrigins": {
+      "value": "${NEO4J_MCP_HTTP_ALLOWED_ORIGINS=}"
+    },
+    "foundryModelName": {
+      "value": "${FOUNDRY_MODEL_NAME=gpt-5-mini}"
+    },
+    "foundryModelVersion": {
+      "value": "${FOUNDRY_MODEL_VERSION=2025-08-07}"
+    },
+    "foundryModelSkuName": {
+      "value": "${FOUNDRY_MODEL_SKU=GlobalStandard}"
+    },
+    "foundryModelCapacity": {
+      "value": "${FOUNDRY_MODEL_CAPACITY=120}"
+    },
+    "foundryEmbeddingModelName": {
+      "value": "${FOUNDRY_EMBEDDING_MODEL_NAME=text-embedding-3-small}"
+    },
+    "foundryEmbeddingModelVersion": {
+      "value": "${FOUNDRY_EMBEDDING_MODEL_VERSION=1}"
+    },
+    "foundryEmbeddingModelSkuName": {
+      "value": "${FOUNDRY_EMBEDDING_MODEL_SKU=GlobalStandard}"
+    },
+    "foundryEmbeddingModelCapacity": {
+      "value": "${FOUNDRY_EMBEDDING_MODEL_CAPACITY=30}"
+    },
+    "principalId": {
+      "value": "${AZURE_PRINCIPAL_ID=}"
+    },
+    "principalType": {
+      "value": "${AZURE_PRINCIPAL_TYPE=User}"
+    }
+  }
+}

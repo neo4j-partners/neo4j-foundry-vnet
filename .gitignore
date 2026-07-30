@@ -1,0 +1,8 @@
+.azure/
+.env
+.env.deployed
+__pycache__/
+.venv/
+
+# Generated synthetic dataset (reproduce with: uv run data/generate.py)
+data/seed.cypher
