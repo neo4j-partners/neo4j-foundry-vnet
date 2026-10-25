@@ -1,7 +1,29 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
-name: foundry-neo4j-mcp-vnet
+name: neo4j-foundry-vnet
 metadata:
-  template: foundry-neo4j-mcp-vnet@0.1.0
+  template: neo4j-foundry-vnet@1.0.0
+requiredVersions:
+  azd: ">= 1.31.0"
 infra:
   provider: bicep
   path: infra
+hooks:
+  preprovision:
+    windows:
+      shell: pwsh
+      run: ./scripts/preprovision.ps1
+      interactive: true
+    posix:
+      shell: sh
+      run: ./scripts/preprovision.sh
+      interactive: true
+  postprovision:
+    windows:
+      shell: pwsh
+      run: ./scripts/postprovision.ps1
+    posix:
+      shell: sh
+      run: ./scripts/postprovision.sh
+  predown:
+    kind: python
+    run: ./scripts/predown.py

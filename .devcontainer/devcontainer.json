@@ -1,0 +1,25 @@
+{
+  "name": "Neo4j Foundry VNet template",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+  "features": {
+    "ghcr.io/azure/azure-dev/azd:latest": {
+      "extensions": "microsoft.foundry"
+    },
+    "ghcr.io/devcontainers/features/azure-cli:1": {},
+    "ghcr.io/devcontainers/features/python:1": {
+      "version": "os-provided",
+      "installTools": false
+    },
+    "ghcr.io/va-h/devcontainers-features/uv:1": {}
+  },
+  "postCreateCommand": "az bicep install && azd version && azd extension list --installed && az version && uv --version",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-azuretools.vscode-azure-github-copilot",
+        "ms-azuretools.vscode-bicep",
+        "ms-python.python"
+      ]
+    }
+  }
+}

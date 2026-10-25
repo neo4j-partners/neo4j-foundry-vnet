@@ -5,7 +5,7 @@
 # attempt must fail.
 set -uo pipefail
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")" || exit
 
 if [ -f .env.deployed ]; then
   # shellcheck disable=SC1091
@@ -15,7 +15,7 @@ fi
 FQDN="${MCP_FQDN:-}"
 ENDPOINT="${NEO4J_MCP_ENDPOINT:-}"
 if [ -z "$FQDN" ] || [ -z "$ENDPOINT" ]; then
-  echo "Missing MCP_FQDN / NEO4J_MCP_ENDPOINT — run ./deploy.sh first." >&2
+  echo "Missing MCP_FQDN / NEO4J_MCP_ENDPOINT — run azd up first." >&2
   exit 1
 fi
 

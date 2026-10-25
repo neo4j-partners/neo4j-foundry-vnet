@@ -29,7 +29,7 @@ param peSubnetName string = 'pe-subnet'
 @description('The name of MCP subnet for user-deployed Container Apps')
 param mcpSubnetName string = 'mcp-subnet'
 
-@description('The name of the Neo4j subnet (delegated to Azure Container Instances for the private database)')
+@description('The name of the Neo4j subnet used by private Neo4j VMs')
 param neo4jSubnetName string = 'neo4j-subnet'
 
 @description('Address space for the VNet')
@@ -53,6 +53,35 @@ var agentSubnet = empty(agentSubnetPrefix) ? cidrSubnet(vnetAddress, 24, 0) : ag
 var peSubnet = empty(peSubnetPrefix) ? cidrSubnet(vnetAddress, 24, 1) : peSubnetPrefix
 var mcpSubnet = empty(mcpSubnetPrefix) ? cidrSubnet(vnetAddress, 24, 2) : mcpSubnetPrefix
 var neo4jSubnet = empty(neo4jSubnetPrefix) ? cidrSubnet(vnetAddress, 24, 3) : neo4jSubnetPrefix
+
+// Neo4j VMs have no public IP. Explicit NAT supplies outbound access for OS
+// packages and the Neo4j distribution while keeping inbound access private.
+resource natPublicIp 'Microsoft.Network/publicIPAddresses@2024-05-01' = {
+  name: 'pip-${vnetName}-nat'
+  location: location
+  sku: {
+    name: 'Standard'
+  }
+  properties: {
+    publicIPAllocationMethod: 'Static'
+  }
+}
+
+resource natGateway 'Microsoft.Network/natGateways@2024-05-01' = {
+  name: 'nat-${vnetName}'
+  location: location
+  sku: {
+    name: 'Standard'
+  }
+  properties: {
+    idleTimeoutInMinutes: 10
+    publicIpAddresses: [
+      {
+        id: natPublicIp.id
+      }
+    ]
+  }
+}
 
 resource virtualNetwork 'Microsoft.Network/virtualNetworks@2024-05-01' = {
   name: vnetName
@@ -99,20 +128,13 @@ resource virtualNetwork 'Microsoft.Network/virtualNetworks@2024-05-01' = {
         }
       }
       {
-        // Hosts the private Neo4j Enterprise container on Azure Container
-        // Instances. ACI VNet integration requires a subnet delegated
-        // exclusively to Microsoft.ContainerInstance/containerGroups.
+        // Plain subnet for the private Neo4j VM deployment.
         name: neo4jSubnetName
         properties: {
           addressPrefix: neo4jSubnet
-          delegations: [
-            {
-              name: 'Microsoft.ContainerInstance/containerGroups'
-              properties: {
-                serviceName: 'Microsoft.ContainerInstance/containerGroups'
-              }
-            }
-          ]
+          natGateway: {
+            id: natGateway.id
+          }
         }
       }
     ]
@@ -123,6 +145,8 @@ output peSubnetName string = peSubnetName
 output agentSubnetName string = agentSubnetName
 output mcpSubnetName string = mcpSubnetName
 output neo4jSubnetName string = neo4jSubnetName
+output neo4jSubnetPrefix string = neo4jSubnet
+output mcpSubnetPrefix string = mcpSubnet
 output agentSubnetId string = '${virtualNetwork.id}/subnets/${agentSubnetName}'
 output peSubnetId string = '${virtualNetwork.id}/subnets/${peSubnetName}'
 output mcpSubnetId string = '${virtualNetwork.id}/subnets/${mcpSubnetName}'

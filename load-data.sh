@@ -1,79 +1,89 @@
 #!/usr/bin/env bash
-# Load the synthetic wind-turbine digital-twin graph into the private Neo4j.
-#
-# The database has no public endpoint, so we never connect to it from here.
-# Instead we upload the generated seed.cypher to the Azure Files share that is
-# mounted at /import inside the Neo4j container, then run cypher-shell *inside*
-# the container (against localhost) via `az container exec`. Nothing about the
-# database is exposed to the internet at any point.
+# Loads the neutral synthetic wind-turbine graph through Azure VM Run Command.
+# Neo4j has no public endpoint and no inbound SSH rule.
 set -euo pipefail
 cd "$(dirname "$0")"
 
-command -v az >/dev/null || { echo "Missing az CLI." >&2; exit 1; }
-
 azd_get() {
-  local out
-  if out="$(azd env get-value "$1" 2>/dev/null)" && [[ "$out" != ERROR:* ]]; then
-    printf '%s' "$out"
+  local value
+  if value="$(azd env get-value "$1" 2>/dev/null)" && [[ "$value" != ERROR:* ]]; then
+    printf '%s' "$value"
   fi
 }
 
-RG="$(azd_get resourceGroupName)"
-CG="$(azd_get neo4jContainerGroupName)"
-SA="$(azd_get neo4jImportStorageAccount)"
-SHARE="$(azd_get neo4jImportShareName)"
-NEO4J_USER="$(azd_get NEO4J_USERNAME)"; NEO4J_USER="${NEO4J_USER:-neo4j}"
-NEO4J_PW="$(azd_get NEO4J_PASSWORD)"
+resource_group="$(azd_get resourceGroupName)"
+vm_name="$(azd_get neo4jFirstNodeVmName)"
+location="$(azd_get AZURE_LOCATION)"
+agent_user="$(azd_get NEO4J_AGENT_USERNAME)"
+agent_user="${agent_user:-agent}"
 
-if [ -z "$CG" ]; then
-  echo "No in-VNet Neo4j deployed (neo4jContainerGroupName empty). If you set an" >&2
-  echo "external NEO4J_URI, load your data through your own path instead." >&2
+[ -n "$resource_group" ] && [ -n "$vm_name" ] || {
+  echo "No bundled Neo4j VM was found. Run azd up first, or load BYO Neo4j through its own data path." >&2
   exit 1
-fi
-[ -n "$RG" ] && [ -n "$SA" ] && [ -n "$SHARE" ] && [ -n "$NEO4J_PW" ] || {
-  echo "Missing deploy outputs. Run ./deploy.sh first." >&2; exit 1; }
+}
 
-# 1. (Re)generate the synthetic seed if needed.
+case "$agent_user" in
+  *[!A-Za-z0-9_]*|'') echo "NEO4J_AGENT_USERNAME must match [A-Za-z0-9_]+." >&2; exit 1 ;;
+esac
+
 if [ ! -f data/seed.cypher ]; then
-  echo "Generating data/seed.cypher..."
+  echo "Generating the neutral synthetic dataset..."
   if command -v uv >/dev/null; then uv run data/generate.py; else python3 data/generate.py; fi
 fi
 
-# 2. Upload the seed (and a small verify query) to the private import share.
-#    This is the storage data-plane, not the database — Neo4j stays private.
-echo "Uploading seed.cypher to //${SA}/${SHARE}..."
-KEY="$(az storage account keys list -g "$RG" -n "$SA" --query '[0].value' -o tsv)"
-az storage file upload \
-  --account-name "$SA" --account-key "$KEY" \
-  --share-name "$SHARE" --source data/seed.cypher --path seed.cypher -o none
-az storage file upload \
-  --account-name "$SA" --account-key "$KEY" \
-  --share-name "$SHARE" --source data/verify.cypher --path verify.cypher -o none
+# A short-lived staging account lets the private VM download the seed over its
+# explicit NAT egress. The storage account and SAS are removed on exit.
+staging_account="stload$(openssl rand -hex 7)"
+cleanup() {
+  az storage account delete --resource-group "$resource_group" --name "$staging_account" --yes --output none 2>/dev/null || true
+}
+trap cleanup EXIT
 
-# 3. Wait for Neo4j to accept connections (inside the container).
-echo "Waiting for Neo4j to be ready..."
+echo "Creating short-lived staging storage ${staging_account}..."
+az storage account create --resource-group "$resource_group" --name "$staging_account" --location "$location" --sku Standard_LRS --output none
+storage_key="$(az storage account keys list --resource-group "$resource_group" --account-name "$staging_account" --query '[0].value' --output tsv)"
+az storage container create --account-name "$staging_account" --account-key "$storage_key" --name load --output none
+az storage blob upload --account-name "$staging_account" --account-key "$storage_key" --container-name load --name seed.cypher --file data/seed.cypher --overwrite --output none
+az storage blob upload --account-name "$staging_account" --account-key "$storage_key" --container-name load --name verify.cypher --file data/verify.cypher --overwrite --output none
+
+expiry="$(date -u -v+3H '+%Y-%m-%dT%H:%MZ' 2>/dev/null || date -u -d '+3 hours' '+%Y-%m-%dT%H:%MZ')"
+seed_sas="$(az storage blob generate-sas --account-name "$staging_account" --account-key "$storage_key" --container-name load --name seed.cypher --permissions r --expiry "$expiry" --output tsv)"
+verify_sas="$(az storage blob generate-sas --account-name "$staging_account" --account-key "$storage_key" --container-name load --name verify.cypher --permissions r --expiry "$expiry" --output tsv)"
+seed_url="https://${staging_account}.blob.core.windows.net/load/seed.cypher?${seed_sas}"
+verify_url="https://${staging_account}.blob.core.windows.net/load/verify.cypher?${verify_sas}"
+
+# This fragment is intentionally single-quoted so expansion happens on the VM.
+# shellcheck disable=SC2016
+credentials='export NEO4J_USERNAME=neo4j; export NEO4J_PASSWORD="$(/opt/kv-secret.sh neo4j-admin-password)"; CS="/opt/neo4j/bin/cypher-shell -a neo4j+ssc://localhost:7687"'
+
+echo "Waiting for Neo4j on ${vm_name}..."
 ready=0
-for i in $(seq 1 40); do
-  if az container exec -g "$RG" -n "$CG" --container-name neo4j \
-       --exec-command "cypher-shell -u $NEO4J_USER -p $NEO4J_PW 'RETURN 1'" >/dev/null 2>&1; then
-    ready=1; echo "  ready."; break
-  fi
-  sleep 5
+for _ in $(seq 1 60); do
+  output="$(az vm run-command invoke --resource-group "$resource_group" --name "$vm_name" --command-id RunShellScript --scripts "$credentials; \$CS 'RETURN 1' 2>&1 | tail -1" --query 'value[0].message' --output tsv 2>/dev/null || true)"
+  if printf '%s\n' "$output" | grep -q '^1$'; then ready=1; break; fi
+  sleep 15
 done
-[ "$ready" -eq 1 ] || { echo "Neo4j did not become ready in time." >&2; exit 1; }
+[ "$ready" -eq 1 ] || { echo "Neo4j did not become ready. Inspect cloud-init through Azure Run Command." >&2; exit 1; }
 
-# 4. Load the seed from inside the container (localhost — never exposed).
-echo "Loading the graph (this can take a minute)..."
-az container exec -g "$RG" -n "$CG" --container-name neo4j \
-  --exec-command "cypher-shell -u $NEO4J_USER -p $NEO4J_PW -f /import/seed.cypher"
+echo "Downloading and loading the synthetic graph inside the private VM..."
+az vm run-command invoke --resource-group "$resource_group" --name "$vm_name" --command-id RunShellScript --scripts "
+set -euo pipefail
+curl -fsSL '$seed_url' -o /tmp/seed.cypher
+curl -fsSL '$verify_url' -o /tmp/verify.cypher
+$credentials
+\$CS -f /tmp/seed.cypher
+\$CS -f /tmp/verify.cypher
+" --query 'value[0].message' --output tsv
 
-# 5. Report the resulting counts. Run the query from an uploaded file — passing
-#    an inline Cypher string with spaces through `az container exec` is mangled
-#    by argument splitting, so a `-f` file is the reliable way.
-echo ""
-echo "Node counts:"
-az container exec -g "$RG" -n "$CG" --container-name neo4j \
-  --exec-command "cypher-shell -u $NEO4J_USER -p $NEO4J_PW -f /import/verify.cypher"
+echo "Creating read-only Neo4j user '${agent_user}' for the MCP connection..."
+az vm run-command invoke --resource-group "$resource_group" --name "$vm_name" --command-id RunShellScript --scripts "
+set -euo pipefail
+$credentials
+AGENT_PASSWORD=\"\$(/opt/kv-secret.sh neo4j-agent-password)\"
+\$CS -d system \"CREATE USER ${agent_user} IF NOT EXISTS SET PASSWORD '\$AGENT_PASSWORD' SET PASSWORD CHANGE NOT REQUIRED\"
+\$CS -d system \"ALTER USER ${agent_user} SET PASSWORD '\$AGENT_PASSWORD' SET PASSWORD CHANGE NOT REQUIRED\" 2>/dev/null || true
+\$CS -d system \"GRANT ROLE reader TO ${agent_user}\"
+\$CS -d system --format plain \"SHOW USERS YIELD user, roles WHERE user = '${agent_user}' RETURN user, roles\"
+" --query 'value[0].message' --output tsv
 
-echo ""
-echo "Done. The synthetic wind-turbine digital twin is loaded in the private Neo4j."
+echo "Synthetic wind-turbine graph loaded; the MCP connection uses the read-only '${agent_user}' user."

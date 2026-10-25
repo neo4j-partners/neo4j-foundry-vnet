@@ -8,7 +8,7 @@
 #     "python-dotenv",
 # ]
 # ///
-"""E2E test for the network-secured Foundry + Neo4j MCP blueprint.
+"""E2E test for the Foundry Basic VNet + private Neo4j MCP template.
 
 Creates a Responses-API agent whose MCP tool points at the PRIVATE Neo4j MCP
 endpoint (internal-only Container App on the VNet's MCP subnet). The agent
@@ -27,7 +27,7 @@ from pathlib import Path
 
 from azure.ai.projects import AIProjectClient
 from azure.ai.projects.models import MCPTool, PromptAgentDefinition
-from azure.identity import AzureCliCredential
+from azure.identity import DefaultAzureCredential
 from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env.deployed", override=True)
@@ -36,8 +36,8 @@ INSTRUCTIONS = """\
 Role: reliability engineer for a wind-turbine fleet. Source of truth: a Neo4j
 "digital twin" graph reached only through the get-schema and read-cypher tools
 (read-only). The graph models Turbines -> Systems -> Components -> Sensors ->
-Readings, plus Sites and MaintenanceEvents (relationships HAS_SYSTEM,
-HAS_COMPONENT, HAS_SENSOR, GENERATES, HAS_EVENT, AFFECTS, LOCATED_AT). Be
+Readings. Sites connect to Turbines with LOCATED_AT. Maintenance events use
+(Component)-[:HAS_EVENT]->(MaintenanceEvent)-[:AFFECTS]->(Turbine). Be
 thorough and data-driven.
 
 ## Grounding
@@ -46,8 +46,10 @@ Call get-schema once per conversation. You MUST call read-cypher before any
 factual claim about a turbine, component, sensor reading, site, or maintenance
 event. Answer only from read-cypher rows. Never use prior knowledge. If
 read-cypher returns nothing, reply "the graph doesn't contain that". Use modern
-Cypher (`WHERE x IS NOT NULL`). Project `id` properties so follow-ups can build
-on them.
+Cypher (`WHERE x IS NOT NULL`). For maintenance questions, always start from
+`(c:Component)-[:HAS_EVENT]->(e:MaintenanceEvent)-[:AFFECTS]->(t:Turbine)`;
+never start `HAS_EVENT` at a Turbine. Project `id` properties so follow-ups can
+build on them.
 """
 
 # The MS sample notes intermittent data-proxy routing failures on some scale
@@ -57,12 +59,10 @@ MAX_ATTEMPTS = 3
 
 def main() -> None:
     project_endpoint = os.environ.get("FOUNDRY_PROJECT_ENDPOINT")
-    tenant_id = os.environ.get("AZURE_TENANT_ID")
     mcp_endpoint = os.environ.get("NEO4J_MCP_ENDPOINT")
-    if not (project_endpoint and tenant_id and mcp_endpoint):
+    if not (project_endpoint and mcp_endpoint):
         sys.exit(
-            "Missing FOUNDRY_PROJECT_ENDPOINT, AZURE_TENANT_ID, or NEO4J_MCP_ENDPOINT. "
-            "Run ./deploy.sh first."
+            "Missing FOUNDRY_PROJECT_ENDPOINT or NEO4J_MCP_ENDPOINT. Run azd up first."
         )
 
     # Auth (Authorization: Basic ...) lives in the 'neo4j-mcp-auth' project
@@ -80,14 +80,14 @@ def main() -> None:
 
     project = AIProjectClient(
         endpoint=project_endpoint,
-        credential=AzureCliCredential(tenant_id=tenant_id),
+        credential=DefaultAzureCredential(),
     )
     openai = project.get_openai_client()
 
     agent = project.agents.create_version(
         agent_name=os.environ.get("FOUNDRY_TEST_AGENT_NAME", "neo4j-vnet-mcp-agent"),
         definition=PromptAgentDefinition(
-            model=os.environ.get("FOUNDRY_MODEL_DEPLOYMENT_NAME", "gpt-5-mini"),
+            model=os.environ.get("FOUNDRY_MODEL_DEPLOYMENT_NAME", "gpt-4.1"),
             instructions=INSTRUCTIONS,
             tools=[mcp_tool],
         ),
@@ -97,8 +97,11 @@ def main() -> None:
 
     question = os.environ.get(
         "FOUNDRY_QUESTION",
-        "Which turbines have the most high-severity maintenance events, and what "
-        "faults and components are involved? Cite turbine ids.",
+        "Call read-cypher with exactly this query, then summarize the returned rows: "
+        "MATCH (c:Component)-[:HAS_EVENT]->(e:MaintenanceEvent)-[:AFFECTS]->"
+        "(t:Turbine) WHERE e.severity = 'high' RETURN t.id AS turbine_id, "
+        "e.fault AS fault, c.id AS component_id, count(*) AS events "
+        "ORDER BY events DESC LIMIT 5",
     )
     agent_ref = {"agent_reference": {"name": agent.name, "type": "agent_reference"}}
 
@@ -109,7 +112,8 @@ def main() -> None:
             try:
                 response = openai.responses.create(input=question, extra_body=agent_ref)
                 mcp_calls = [
-                    item for item in response.output
+                    item
+                    for item in response.output
                     if getattr(item, "type", "") == "mcp_call"
                 ]
                 for call in mcp_calls:
@@ -122,11 +126,15 @@ def main() -> None:
                 failed = [c for c in mcp_calls if getattr(c, "error", None)]
                 if mcp_calls and not failed:
                     print(f"\n{response.output_text}")
-                    print("\n✓ E2E SUCCESS: agent reached the PRIVATE MCP endpoint through the VNet.")
+                    print(
+                        "\n✓ E2E SUCCESS: agent reached the PRIVATE MCP endpoint through the VNet."
+                    )
                     return
                 if not mcp_calls:
                     # Tool listing may already have failed server-side; surface output.
-                    print(f"  (no mcp_call items; output: {response.output_text[:500]})")
+                    print(
+                        f"  (no mcp_call items; output: {response.output_text[:500]})"
+                    )
                     last_error = "agent made no MCP calls"
                 else:
                     last_error = f"{len(failed)} MCP call(s) errored"
@@ -138,8 +146,12 @@ def main() -> None:
         sys.exit(f"\n✗ E2E FAILED after {MAX_ATTEMPTS} attempts: {last_error}")
     finally:
         if os.environ.get("KEEP_AGENT", "") != "true":
-            project.agents.delete_version(agent_name=agent.name, agent_version=agent.version)
-            print("Agent deleted (set KEEP_AGENT=true to keep it for portal Playground).")
+            project.agents.delete_version(
+                agent_name=agent.name, agent_version=agent.version
+            )
+            print(
+                "Agent deleted (set KEEP_AGENT=true to keep it for portal Playground)."
+            )
 
 
 if __name__ == "__main__":

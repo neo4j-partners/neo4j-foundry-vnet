@@ -1,34 +1,27 @@
-param cosmosDBConnection string 
-param azureStorageConnection string 
-param aiSearchConnection string
+// Basic Agent Setup capability host. Platform-managed agent data resources are
+// used, so no Cosmos DB, Storage, or AI Search connections are supplied.
+targetScope = 'resourceGroup'
+
 param projectName string
 param accountName string
-param projectCapHost string
-
-var threadConnections = ['${cosmosDBConnection}']
-var storageConnections = ['${azureStorageConnection}']
-var vectorStoreConnections = ['${aiSearchConnection}']
-
+param projectCapHost string = 'caphostproj'
 
 resource account 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' existing = {
-   name: accountName
+  name: accountName
 }
 
 resource project 'Microsoft.CognitiveServices/accounts/projects@2025-04-01-preview' existing = {
-  name: projectName
   parent: account
+  name: projectName
 }
 
-resource projectCapabilityHost 'Microsoft.CognitiveServices/accounts/projects/capabilityHosts@2025-04-01-preview' = {
-  name: projectCapHost
+resource capabilityHost 'Microsoft.CognitiveServices/accounts/projects/capabilityHosts@2025-04-01-preview' = {
   parent: project
+  name: projectCapHost
   properties: {
+    #disable-next-line BCP037
     capabilityHostKind: 'Agents'
-    vectorStoreConnections: vectorStoreConnections
-    storageConnections: storageConnections
-    threadStorageConnections: threadConnections
   }
-
 }
 
-output projectCapHost string = projectCapabilityHost.name
+output capabilityHostName string = capabilityHost.name

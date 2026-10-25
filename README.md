@@ -1,231 +1,268 @@
-# Foundry Agent Service + Neo4j MCP over VNet (Enterprise Blueprint)
+# Neo4j on Microsoft Foundry with private networking
 
-An **end-to-end private** blueprint: a Microsoft Foundry (Azure AI Foundry)
-agent talks to the official Neo4j MCP server on an **internal-only** Azure
-Container App, which in turn queries a **private Neo4j Enterprise** database —
-all reached over a customer-managed VNet, nothing on the public internet. It's
-the network-secured superset of the
-[neo4j-agent-integrations `microsoft-foundry` example](https://github.com/neo4j-labs/neo4j-agent-integrations/tree/main/microsoft-foundry),
-using Foundry Standard Agent Setup with virtual-network injection.
+An Azure Developer CLI (`azd`) template for connecting Microsoft Foundry agents
+to Neo4j inside a private virtual network. It deploys Foundry **Basic Agent
+Setup** with platform-managed agent storage, a private Neo4j MCP endpoint, and
+an optional private Neo4j Enterprise database on Azure VMs.
 
+[Features](#features) • [Getting Started](#getting-started) •
+[Resources](#resources) • [Guidance](#guidance)
+
+> [!IMPORTANT]
+> This is an evaluation template, not a production reference architecture.
+> Review security controls, costs, model availability, Neo4j license terms, and
+> your organization's Azure policies before production use.
+
+## Important Security Notice
+
+This sample is secure-by-default for inbound networking: Foundry, MCP, Neo4j,
+and Key Vault do not expose public application endpoints. The bundled database
+uses a self-signed Bolt certificate and Neo4j Enterprise evaluation software.
+Replace the certificate, harden operational access, and complete your own threat
+model and compliance review before using the design with sensitive data.
+
+The repository contains only generated wind-turbine data. It contains no real
+customer, company, person, or product data.
+
+## Features
+
+- Microsoft Foundry Basic Agent Setup with VNet injection and platform-managed
+  agent storage—no separate Azure Cosmos DB, Storage, or AI Search deployment.
+- An internal Azure Container Apps environment running the version-pinned,
+  official Neo4j MCP server in read-only mode by default.
+- A private Neo4j Enterprise VM deployment with no public IP or inbound SSH,
+  Bolt TLS, Trusted Launch, Premium SSD storage, verified release downloads,
+  and explicit NAT-only egress.
+- A dedicated Neo4j `reader` user for MCP plus a second read-only barrier in the
+  MCP server.
+- Key Vault-backed secrets and managed identity for VM secret retrieval.
+- Neutral synthetic graph data and a deterministic Foundry agent test that
+  exercises a real `read-cypher` MCP call.
+- Cross-platform `azd` hooks for license acknowledgement, secret generation,
+  secure post-provision configuration, and ordered Foundry/VNet teardown.
+- GitHub OIDC deployment, Microsoft gallery validation, a tested Dev Container,
+  and the standard open-source community files required by the azd gallery.
+
+### Architecture
+
+```mermaid
+flowchart TB
+    User[Developer or application] -->|VPN, ExpressRoute, or private runner| Foundry
+
+    subgraph Azure[Azure resource group]
+        subgraph VNet[Virtual network 192.168.0.0/16]
+            Foundry[Microsoft Foundry project<br/>Basic Agent Setup]
+            MCP[Neo4j MCP<br/>internal Container App]
+            Neo4j[(Neo4j Enterprise<br/>private VM or cluster)]
+            PE[Foundry and Key Vault<br/>private endpoints]
+        end
+        KV[Azure Key Vault]
+    end
+
+    Foundry -->|VNet-injected tool call| MCP
+    MCP -->|neo4j+ssc / Bolt TLS| Neo4j
+    PE --- KV
 ```
-                    ┌──────────────────────────────────────────────┐
-   you / portal ───▶│ Foundry account (inbound public*, egress VNet)│
-                    │   project · gpt-5-mini · caphost              │
-                    └──────────────┬───────────────────────────────┘
-                                   │ networkInjections (data proxy)
-   VNet 192.168.0.0/16 ────────────┼───────────────────────────────────
-   ├─ agent-subnet /24  ◀──────────┘  delegated Microsoft.App/environments
-   ├─ pe-subnet    /24  private endpoints: Foundry · Cosmos · Storage · Search
-   ├─ mcp-subnet   /24  internal ACA env ── neo4j-mcp (mcp/neo4j)
-   │                    private DNS zone: <env-default-domain> → env static IP
-   │                         │ private Bolt (bolt://10.x:7687)
-   └─ neo4j-subnet /24  ◀────┘  Neo4j Enterprise (ACI, private IP, no public endpoint)
+
+The VNet uses four `/24` subnets: one delegated to the Foundry agent runtime,
+one for private endpoints, one delegated to the internal MCP Container Apps
+environment, and one for Neo4j.
+
+## Resources
+
+| Resource | Purpose |
+| --- | --- |
+| Foundry account, project, model, and capability hosts | Basic Agent Setup with VNet injection |
+| VNet and four subnets | Isolation for the agent runtime, private endpoints, MCP, and Neo4j |
+| Foundry private endpoint and private DNS zones | Private account access and name resolution |
+| Internal Container Apps environment and app | VNet-only Neo4j MCP endpoint |
+| Log Analytics workspace | MCP platform and application logs |
+| Key Vault and private endpoint | Neo4j credentials for the bundled deployment |
+| One Neo4j VM by default | Low-cost evaluation database; optionally three primaries for HA testing |
+| NAT gateway and public egress IP | Explicit outbound bootstrap path for the Neo4j VMs |
+
+## Getting Started
+
+### Prerequisites
+
+- An Azure subscription and permission to create resources and role
+  assignments: Foundry Account Owner plus Owner, or Contributor with Role Based
+  Access Administrator.
+- Model quota in the target region. The default is `gpt-4.1` version
+  `2025-04-14`, Global Standard, 30K TPM.
+- [Azure Developer CLI](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd)
+  1.31 or later, Azure CLI, OpenSSL, `ssh-keygen`, and Python 3.10 or later.
+- Registered resource providers: `Microsoft.App`,
+  `Microsoft.CognitiveServices`, `Microsoft.Compute`, `Microsoft.KeyVault`,
+  `Microsoft.Network`, `Microsoft.OperationalInsights`, and
+  `Microsoft.ContainerService`.
+- A private access path such as VPN, ExpressRoute, or a VNet-connected runner to
+  call the Foundry project when public network access is disabled.
+
+The checked-in Dev Container supplies the required development tools. In a
+Codespace, use device-code authentication if browser authentication is not
+available. The pre-provision hook registers missing providers when the deployer
+has permission. This release supports the public `AzureCloud` environment;
+sovereign clouds require endpoint and availability review.
+
+### Deploy
+
+After publication in the Neo4j GitHub organization, initialize a new project:
+
+```bash
+azd init --template neo4j/neo4j-foundry-vnet
 ```
 
-Everything private end-to-end: the agent's egress, the MCP server, the Neo4j
-database, and all agent data-plane resources (Cosmos DB, Storage, AI Search).
+From an existing checkout:
 
-\* Inbound public access on the **Foundry endpoint only** is a deliberate POC
-default (`FOUNDRY_PUBLIC_NETWORK_ACCESS=Enabled`) so you can use the portal and
-SDK without a VPN. Set it to `Disabled` for full inbound isolation too (then you
-reach Foundry via VPN/ExpressRoute/Bastion). Nothing about the MCP server or the
-database is ever public in either mode.
+```bash
+azd auth login
+az login
+azd up
+```
 
-**Neutral template.** The demo data is a fully synthetic wind-turbine fleet
-digital twin generated by [`data/generate.py`](data/generate.py) — no real
-companies, products, or customer data. Point `NEO4J_URI` at a real database to
-adapt it (see [Bring your own Neo4j](#bring-your-own-neo4j)).
+The pre-provision hook asks for explicit acceptance of the Neo4j Enterprise
+license, generates strong database passwords in the gitignored azd environment,
+and creates a local SSH key. The VM has no SSH endpoint.
 
-## Why this exists
+For unattended evaluation deployments, acknowledge the license before `azd up`:
 
-Enterprises can't expose internal data tools (like a Neo4j MCP server fronting
-a corporate knowledge graph) on the public internet. Historically the Foundry
-agent data proxy could not resolve private DNS
-([MS Q&A 5849073](https://learn.microsoft.com/en-us/answers/questions/5849073/azure-ai-foundry-agent-service-data-proxy-cannot-r),
-April 2026 — the then-recommended workaround was a public App Gateway). That
-limitation is gone: **private MCP is now officially supported** — see the
-[tool support table](https://learn.microsoft.com/azure/foundry/how-to/configure-private-link#agent-tools-with-network-isolation)
-("MCP Tool (Private MCP): Supported — through your VNet subnet") and official
-sample [`19-private-network-agent-tools`](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/19-private-network-agent-tools),
-whose battle-tested Bicep modules are vendored here under
-[`infra/modules-network-secured/`](infra/modules-network-secured/).
+```bash
+azd env set NEO4J_ACCEPT_LICENSE_AGREEMENT yes
+azd up --no-prompt
+```
 
-> **Important:** private MCP only works with the **new Responses-API agents**
-> (SDK/CLI or the new Foundry portal) — not agents created in the classic
-> portal experience.
+To use an existing Neo4j instance reachable from the VNet and skip the bundled
+Enterprise VMs:
 
-## What gets deployed
+```bash
+azd env set NEO4J_URI neo4j+s://your-private-neo4j.example:7687
+azd env set NEO4J_AGENT_USERNAME your-read-only-user
+azd env set NEO4J_AGENT_PASSWORD your-password
+azd up
+```
 
-For azd environment `vnet-poc` (workload token `fdy-neo4j`):
+### Load and test the sample
 
-| Resource | Name | Notes |
+```bash
+./load-data.sh
+./test-private.sh
+uv run agent/create_and_test_agent.py
+```
+
+The loader creates synthetic wind-turbine data, stages it in a temporary
+Storage account, imports it through VM Run Command, and removes the staging
+account. The tests verify public DNS isolation and an end-to-end Foundry agent
+MCP call. See [Testing](docs/TESTING.md) for the expected result and private
+access requirements.
+
+For a shorter evaluation in a non-sensitive tenant, Foundry inbound access can
+be enabled while agent egress, MCP, and Neo4j stay private:
+
+```bash
+azd env set FOUNDRY_PUBLIC_NETWORK_ACCESS Enabled
+azd up
+```
+
+### Clean up
+
+```bash
+azd down --force --purge
+```
+
+The `predown` hook implements Microsoft's required deletion order: project
+capability host, account capability host, project, account delete and purge,
+then service-association-link release. Cleanup commonly takes 10–20 minutes.
+Microsoft notes that platform cleanup can occasionally take up to 24 hours; if
+the hook reports a link still present, retry the same command later.
+
+## Guidance
+
+### Basic versus Standard Agent Setup
+
+Basic is intentional here. It provides full VNet injection while Microsoft
+manages agent state, avoiding three resources that this use case does not need.
+Choose Standard only when policy or data-residency requirements demand
+customer-managed agent Storage, Cosmos DB, and AI Search.
+
+| Requirement | Basic (this template) | Standard |
 | --- | --- | --- |
-| Resource group | `rg-fdy-neo4j-vnet-poc` | subscription-scoped Bicep creates it |
-| VNet | `vnet-fdy-neo4j-vnet-poc` | 192.168.0.0/16, **four** subnets (agent · pe · mcp · neo4j) |
-| Foundry account | `aif-fdy-neo4j-vnet-poc-<hash>` | `networkInjections` → agent-subnet (create-time only!) |
-| Foundry project | `proj-fdy-neo4j-vnet-poc` | + AAD connections to Cosmos/Storage/Search |
-| Model deployments | `gpt-5-mini`, `text-embedding-3-small` | same as the public example |
-| Capability host | `caphostproj` | wires agent state to the BYO resources |
-| Cosmos DB / Storage / AI Search | `cos-…` / `st…` / `srch-…` | BYO agent state, public access disabled, private endpoints |
-| Private DNS zones | `privatelink.{services.ai,openai,cognitiveservices}.azure.com`, `privatelink.search.windows.net`, `privatelink.blob.core.windows.net`, `privatelink.documents.azure.com`, `<aca-default-domain>` | linked to the VNet |
-| ACA environment | `cae-fdy-neo4j-vnet-poc` | **internal-only**, workload-profiles, on mcp-subnet |
-| Container App | `ca-fdy-neo4j-vnet-poc` | `mcp/neo4j:latest`, HTTP transport :8000, VNet-only ingress |
-| **Neo4j Enterprise** | `aci-neo4j-fdy-neo4j-vnet-poc` | Azure Container Instances on **neo4j-subnet**, **private IP only**, Bolt :7687, eval license |
-| Neo4j import storage | `stn4j…` | Azure Files share mounted at `/import` for loading the seed privately |
-| Log Analytics | `log-fdy-neo4j-vnet-poc` | ACA logs |
+| Agent runtime egress in your VNet | Yes | Yes |
+| Platform-managed agent state | Yes | No |
+| Customer-managed Storage, Cosmos DB, and AI Search | No | Required |
+| Lower operational footprint | Yes | No |
 
-By default the template deploys the **private Neo4j Enterprise** container above
-and points the MCP server at it over private Bolt — nothing about the database
-is public. See [Bring your own Neo4j](#bring-your-own-neo4j) to use an existing
-cluster instead.
+Microsoft's current MCP page is internally inconsistent: its private endpoint
+instructions point users without BYO resources to Basic template 11, while its
+known-limitations section says private MCP requires Standard. This template's
+Basic/private-MCP path was successfully tested in an Azure tenant on August 26,
+2026, including a real `read-cypher` tool call. Treat that combination as an
+evaluation feature until Microsoft resolves the documentation conflict; the
+gallery submission should ask the curator to confirm support explicitly.
 
-## Deploy
+This repository deploys MCP today. Its broader name, `neo4j-foundry-vnet`, leaves
+room for a future hosted-agent example that uses the Neo4j driver directly;
+that future example should be additive and must not be represented as part of
+the current deployment.
 
-Prereqs: `az` (logged in), `azd`, `uv` (for the scripts). Resource providers
-`Microsoft.App`, `Microsoft.CognitiveServices`, `Microsoft.Network`,
-`Microsoft.Search`, `Microsoft.Storage`, `Microsoft.DocumentDB`,
-`Microsoft.ContainerInstance` registered.
+### Configuration
 
-```bash
-./deploy.sh          # azd up → ~20-30 min (capability host is slow)
-./load-data.sh       # load the synthetic turbine graph into the private Neo4j
-```
+| azd environment variable | Default | Purpose |
+| --- | --- | --- |
+| `FOUNDRY_PUBLIC_NETWORK_ACCESS` | `Disabled` | Private or public Foundry inbound access |
+| `FOUNDRY_MODEL_NAME` | `gpt-4.1` | Model and deployment name |
+| `FOUNDRY_MODEL_VERSION` | `2025-04-14` | Model version |
+| `NEO4J_MCP_CONTAINER_IMAGE` | `neo4j/mcp:v1.5.3` plus OCI digest | Version- and digest-pinned official MCP image |
+| `NEO4J_NODE_COUNT` | `1` | Bundled Enterprise primary count; use `3` for HA testing |
+| `NEO4J_VM_SIZE` | `Standard_D4s_v5` | VM size per Neo4j node |
+| `NEO4J_DATA_DISK_SIZE_GB` | `256` | Premium SSD size per Neo4j node |
+| `NEO4J_VERSION` | `2026.07.1` | Bundled Neo4j Enterprise release |
+| `NEO4J_URI` | empty | Existing private Neo4j URI; skips bundled VMs |
+| `NEO4J_READ_ONLY` | `true` | Removes MCP write tools |
 
-`deploy.sh` generates a Neo4j password on first run (stored only in the
-gitignored azd env). `load-data.sh` uploads the generated seed to the DB's
-private `/import` share and runs it *inside* the container — the database is
-never exposed. Defaults: region `swedencentral`, azd env `vnet-poc`. Override
-with `azd env set AZURE_LOCATION <region>` / `azd env new <name>`, or `./.env`
-(same keys as [infra/main.parameters.json](infra/main.parameters.json)).
+### Security
 
-### Bring your own Neo4j
+- Foundry public network access is disabled by default; a private endpoint and
+  private DNS are deployed.
+- MCP and Neo4j have no public inbound endpoint. VM NSGs allow Bolt only from
+  the MCP subnet and cluster traffic only inside the Neo4j subnet.
+- MCP authenticates with a dedicated Neo4j user assigned the built-in `reader`
+  role. Read-only MCP mode independently removes write tools.
+- Passwords are marked secure in Bicep, stored in Key Vault, and never written
+  to deployment output files. VM managed identities retrieve them at boot.
+- Key Vault public access is Entra-protected during initial ARM secret seeding;
+  the post-provision hook disables it after its private endpoint is ready.
+- The sample uses `neo4j+ssc://` with self-signed TLS. Production deployments
+  should use organization-issued certificates and `neo4j+s://`.
+- Enable GitHub secret scanning and dependency update automation after the
+  repository is published.
 
-Set `NEO4J_URI` (e.g. `azd env set NEO4J_URI bolt://10.20.0.5:7687`) to skip the
-in-VNet container and point the MCP server at an existing database — a Neo4j
-Enterprise cluster reachable over a peered/injected VNet, or an Aura
-Business Critical / VDC instance behind Azure Private Link. Also set
-`NEO4J_USERNAME` / `NEO4J_PASSWORD` (they populate the MCP auth connection), and
-load your own data through your own path.
+### Region availability and cost
 
-## Test
+Foundry, the VNet, and the selected model must be available in the chosen
+region. Capacity changes frequently, so validate quota before deployment. The
+template uses `192.168.0.0/16` because Foundry limits `10.x` injection ranges in
+some regions.
 
-```bash
-./test-private.sh                        # negative: MCP endpoint NOT publicly reachable
-uv run agent/create_and_test_agent.py    # E2E: agent → data proxy → VNet → MCP → Neo4j
-```
+The main costs are the Neo4j VM and Premium SSD, model tokens, Container Apps,
+Log Analytics ingestion, NAT gateway, and private endpoints. The default
+single-node database minimizes evaluation cost; three nodes roughly triple the
+VM and disk portion. Use the [Azure pricing calculator](https://azure.microsoft.com/pricing/calculator/)
+for your region and delete the environment when finished.
 
-The E2E script creates a Responses-API agent with an `MCPTool` pointing at the
-private endpoint (allowed tools `get-schema` / `read-cypher`), asks a
-turbine-fleet question, and prints the MCP calls it observes. A successful run
-exercises the whole private chain: **agent → data proxy → agent-subnet →
-private DNS → internal ACA MCP (mcp-subnet) → private Bolt → Neo4j Enterprise
-(neo4j-subnet)**. It retries up to 3× (the data proxy occasionally hits a scale
-unit without proxy support — a known intermittent issue in Microsoft's own test
-suite).
+### Validation and publication
 
-**MCP auth:** the Agent Service **rejects sensitive headers passed inline** on
-the MCP tool (`Headers that can include sensitive information are not allowed
-… Use project_connection_id instead`). The Basic-auth header therefore lives
-in a project connection `neo4j-mcp-auth` (`authType: CustomKeys`, its keys are
-forwarded to the MCP server as HTTP headers), created by
-[infra/modules/foundry-extras.bicep](infra/modules/foundry-extras.bicep) and
-referenced by the agent via `project_connection_id`.
+The repository includes Microsoft's current `template-validation-action`, its
+required README headings and community files, PSRule security validation, a
+Dev Container, and a manual OIDC deployment workflow. The complete owner and
+curator checklist is in [Publishing](docs/PUBLISHING.md).
 
-### Declarative (no-code) agents in the portal
+### Further reading
 
-**Verified working against the private endpoint.** An SDK-created agent shows up
-in the new Foundry portal under **Build → Agents** as a `prompt` agent, fully
-editable — its YAML carries the MCP tool declaratively:
-
-```yaml
-tools:
-  - type: mcp
-    server_label: neo4j_mcp_private
-    server_url: https://ca-…swedencentral.azurecontainerapps.io/mcp   # private
-    allowed_tools:
-      tool_names: [get-schema, read-cypher]
-    require_approval: never
-    project_connection_id: neo4j-mcp-auth
-```
-
-Chatting in the portal Playground answers from the graph, and the response
-footer shows the `mcp_list_tools` / `neo4j_mcp_private` tool chips — the portal
-UI drove the private MCP call through the data proxy (public inbound is enabled,
-so no VPN needed to reach the portal).
-
-To build one **from scratch in the portal**: **Build → Agents → New agent**,
-add the MCP tool exactly as in the
-[public example walkthrough](https://github.com/neo4j-labs/neo4j-agent-integrations/blob/main/microsoft-foundry/examples/mcp/README.md),
-but set the endpoint to the private URL from `.env.deployed`
-(`NEO4J_MCP_ENDPOINT`) and reuse the `neo4j-mcp-auth` connection (or let the
-portal create one with the `Authorization: Basic …` header). The tool's
-**Connect** step validates server-side through the data proxy, so it succeeds
-even though your browser can't reach the private FQDN.
-
-## Enterprise hardening (beyond this POC)
-
-The bundled Neo4j is a **single node** with an **eval license** and **plaintext
-in-VNet Bolt** — right for a blueprint, not production. For a real deployment:
-
-- **Neo4j:** a 3+ primary Neo4j Enterprise cluster (with a licence) for HA, Bolt
-  TLS (`neo4j+s://`) with certs from your PKI, a **read-only least-privilege**
-  DB user for the agent, and `NEO4J_READ_ONLY=true` on the MCP server. Deploy on
-  VMs/AKS or point `NEO4J_URI` at the customer's existing cluster or an Aura
-  Business Critical / VDC instance behind Azure Private Link
-  ([Bring your own Neo4j](#bring-your-own-neo4j)).
-- **Foundry inbound:** `azd env set FOUNDRY_PUBLIC_NETWORK_ACCESS Disabled` →
-  inbound goes private too (private endpoint already provisioned); reach it via
-  VPN/ExpressRoute/Bastion.
-- **Secrets:** Azure Key Vault + managed identity instead of the generated
-  password in the azd env.
-- **Egress control:** NAT gateway / Azure Firewall on the subnets; see the
-  [firewall allowlist](https://learn.microsoft.com/azure/foundry/how-to/configure-private-link#firewall-allowlisting).
-- **Auth:** Entra / OAuth identity passthrough (or private Azure API Management)
-  in front of MCP instead of a static Basic-auth header.
-
-## Gotchas (learned from the official template)
-
-- **Network injection is create-time only.** You cannot add/change it on an
-  existing Foundry account — redeploy instead.
-- **Teardown order matters.** Delete the project capability host, then the
-  account, then **purge** the soft-deleted account, and wait up to ~20 min
-  before reusing the agent subnet — otherwise "Subnet already in use".
-  `azd down --force --purge` + patience covers it.
-- The agent subnet must be **exclusively** used by one Foundry account.
-- Don't use 172.17.0.0/16 anywhere in the VNet (Docker bridge conflict).
-- **Re-running `azd provision` after the capability host exists fails** with
-  `Connection '…' is in use by the workspace capability host and cannot be
-  modified`. This is an idempotency limitation inherited from template 19 (the
-  project-connection PUTs are rejected once the caphost owns them). Fresh
-  deploys are unaffected; for incremental changes, target the changed module
-  (e.g. `az deployment group create`/`az rest` for a single resource) instead
-  of a full re-provision.
-- Class-A (10.x) VNets are only supported in
-  [certain regions](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/19-private-network-agent-tools#limitations--known-issues);
-  this template uses 192.168.0.0/16 which works everywhere.
-- **ACI needs a delegated subnet.** `neo4j-subnet` is delegated exclusively to
-  `Microsoft.ContainerInstance/containerGroups`; it can't be shared with the
-  ACA-delegated subnets.
-- **`az container exec` mangles inline queries with spaces** — the loader runs
-  Cypher from an uploaded `-f` file, not an inline string.
-
-## Layout
-
-```
-azure.yaml                       azd project
-deploy.sh                        azd env seeding + azd up + .env.deployed (+ Neo4j password gen)
-load-data.sh                     load the synthetic graph into the private Neo4j (in-VNet)
-test-private.sh                  public-unreachability check
-data/generate.py                 neutral synthetic wind-turbine digital-twin generator
-data/README.md                   dataset docs + example questions
-infra/main.bicep                 subscription scope: RG + resources.bicep
-infra/resources.bicep            composition (sequencing from template 19)
-infra/modules-network-secured/   vendored from foundry-samples template 19 (+ 4th subnet)
-infra/modules/                   this repo's additions:
-  neo4j-aci.bicep                  private Neo4j Enterprise on ACI + import file share
-  mcp-aca.bicep                    internal ACA env + neo4j-mcp app
-  mcp-dns.bicep                    private DNS zone for the ACA default domain
-  foundry-extras.bicep             embedding model, Foundry User role, MCP auth connection
-agent/create_and_test_agent.py   E2E test (Responses-API agent + MCPTool)
-```
+- [Foundry Agent Service networking options](https://learn.microsoft.com/azure/foundry/agents/concepts/networking-options)
+- [Foundry MCP tools](https://learn.microsoft.com/azure/foundry/agents/how-to/tools/model-context-protocol)
+- [Official Basic VNet template 11](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/11-private-network-basic-vnet)
+- [Official private agent-tools template 19](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/19-private-network-agent-tools)
+- [Official Foundry VNet cleanup tool](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/deployment-tools/cleanup)
+- [Neo4j MCP server](https://github.com/neo4j/mcp)
+- [azd gallery publishing guidelines](https://github.com/Azure-Samples/azd-template-artifacts/blob/main/publishing-guidelines.md)

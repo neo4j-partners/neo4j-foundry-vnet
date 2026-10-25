@@ -14,7 +14,7 @@ uv run data/generate.py     # writes data/seed.cypher (deterministic; fixed seed
 
 The seed is a single self-contained `.cypher` file (schema constraints + batched
 `UNWIND` inserts) — no external CSVs — loadable with `cypher-shell -f seed.cypher`.
-`load-data.sh` runs it inside the private Neo4j container.
+`load-data.sh` runs it on the private Neo4j VM through Azure Run Command.
 
 ## Graph model
 
