@@ -25,7 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-      - uses: Azure/setup-azd@634ad924cf8baef2257898ba5663be8d19f15aca # v2.3.0
+      - uses: Azure/setup-azd@0b7e3a35ab00f2eee7080c845eb39c3f0ebfa553 # v2.4.0
 
       - name: Authenticate Azure CLI with workload identity
         uses: Azure/login@eec3c95657c1536435858eda1f3ff5437fee8474 # v2.3.0
