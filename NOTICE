@@ -1,0 +1,9 @@
+Neo4j on Microsoft Foundry with private networking
+Copyright 2026 Neo4j, Inc.
+
+Portions of the Bicep infrastructure were adapted from Microsoft Foundry
+infrastructure samples published at:
+
+https://github.com/microsoft-foundry/foundry-samples
+
+Those portions retain their applicable upstream copyright and license terms.

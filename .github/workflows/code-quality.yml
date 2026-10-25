@@ -1,0 +1,64 @@
+name: Code quality
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Python linter
+        run: python -m pip install --disable-pip-version-check ruff==0.15.21
+
+      - name: Lint Python
+        run: |
+          ruff check agent data scripts tests
+          ruff format --check agent data scripts tests
+
+      - name: Lint Markdown
+        run: >-
+          npx --yes markdownlint-cli2@0.24.0
+          README.md CONTRIBUTING.md SECURITY.md
+          data/README.md docs/TESTING.md
+          .github/ISSUE_TEMPLATE/bug_report.md
+
+      - name: Run cleanup unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Check shell syntax
+        run: >-
+          bash -n deploy.sh load-data.sh test-private.sh
+          scripts/preprovision.sh scripts/postprovision.sh
+
+      - name: Lint shell scripts
+        run: >-
+          shellcheck deploy.sh load-data.sh test-private.sh
+          scripts/preprovision.sh scripts/postprovision.sh
+
+      - name: Check PowerShell syntax
+        shell: pwsh
+        run: |
+          $failed = $false
+          Get-ChildItem scripts/*.ps1 | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName,
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+            if ($errors.Count) {
+              $failed = $true
+              $errors | ForEach-Object { Write-Error $_ }
+            }
+          }
+          if ($failed) { exit 1 }

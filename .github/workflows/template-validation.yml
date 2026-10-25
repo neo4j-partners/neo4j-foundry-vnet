@@ -1,0 +1,40 @@
+name: Template validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: template-validation-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: microsoft/template-validation-action@bae4895d0a8abd4f0d5aad68ae8647b3027f4c91 # v0.4.4
+        id: validation
+        with:
+          topics: "azd-templates, ai-azd-templates"
+          validateTests: "None"
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          AZURE_ENV_NAME: ${{ vars.AZURE_ENV_NAME }}
+          AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+          NEO4J_ACCEPT_LICENSE_AGREEMENT: yes
+          README_H2_TAG: "Important Security Notice, Features, Getting Started, Resources, Guidance"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Print validation result
+        if: always()
+        run: cat "${{ steps.validation.outputs.resultFile }}"

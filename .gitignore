@@ -1,0 +1,13 @@
+.azure/
+.env
+.env.deployed
+.DS_Store
+__pycache__/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.venv/
+*.py[cod]
+
+# Generated synthetic dataset (reproduce with: uv run data/generate.py)
+data/seed.cypher
